@@ -1,0 +1,51 @@
+name: Secret scan
+description: >-
+  Scan the full history of the checked-out ref for committed secrets, using the
+  gitleaks CLI. Shared by every 34Five repository so the scan, its scoping and
+  its version live in one place.
+
+inputs:
+  gitleaks-version:
+    description: >-
+      Pinned gitleaks release. Floating would let an upstream publish change the
+      verdict on an unchanged repository, in either direction.
+    required: false
+    default: "8.30.1"
+
+runs:
+  using: composite
+  steps:
+    # THE CHECKOUT BELONGS TO THIS ACTION, and its depth is not an input on purpose.
+    # A shallow checkout produces a scan that reads identically and covers almost
+    # nothing, so offering a knob here would only offer a way to disarm the gate
+    # silently. Callers that need their own checkout should not use this action.
+    - uses: actions/checkout@v7.0.1
+      with:
+        fetch-depth: 0
+
+    # The CLI directly, not the gitleaks-action wrapper: the wrapper requires an
+    # organization licence key, the MIT binary does not.
+    - name: Install gitleaks
+      shell: bash
+      # Via env rather than interpolated into the script: a `${{ }}` expansion is
+      # pasted in before bash ever sees the line, so an input carrying shell
+      # metacharacters would execute. Nothing here is untrusted today; the habit is
+      # what keeps that true when someone adds an input that is.
+      env:
+        GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+      run: |
+        set -euo pipefail
+        curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+        tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+        sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+        gitleaks version
+
+    # SCOPED TO HEAD DELIBERATELY. `fetch-depth: 0` brings down every remote ref and
+    # a bare `gitleaks git .` walks all of them, so one finding on anybody's unmerged
+    # branch fails the run for a ref that does not contain it — and in a repository
+    # whose CD keys off CI, that stops deploys for a leak nobody shipped. On a pull
+    # request HEAD is the merge commit, so a branch is still scanned against its own
+    # history plus the base's.
+    - name: Gitleaks (full history of THIS ref, redacted output)
+      shell: bash
+      run: gitleaks git . --log-opts=HEAD --redact --no-banner
